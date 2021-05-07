@@ -15,13 +15,18 @@ from unet import UNet
 from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
 from torch.utils.data import DataLoader, random_split
+from utils.voc_2007_loader import pascalVOCLoader as data_loader
+from utils.loss import get_loss_function
 
 dir_img = 'data/imgs/'
 dir_mask = 'data/masks/'
 dir_checkpoint = 'checkpoints/'
 
+voc_data_path = '/workspace/Dataset/VOC/VOCdevkit/VOC2012/'
+sbd_path = '/workspace/Dataset/VOC/benchmark_RELEASE/'
 
-def train_net(net,
+
+def train_net(load_pth,
               device,
               epochs=5,
               batch_size=1,
@@ -30,15 +35,59 @@ def train_net(net,
               save_cp=True,
               img_scale=0.5):
 
-    dataset = BasicDataset(dir_img, dir_mask, img_scale)
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train, val = random_split(dataset, [n_train, n_val])
-    train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True, drop_last=True)
+    # data load for Carvana
+    # dataset = BasicDataset(dir_img, dir_mask, img_scale)
+    # n_val = int(len(dataset) * val_percent)
+    # n_train = len(dataset) - n_val
+    # train, val = random_split(dataset, [n_train, n_val])
+    # train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    # val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True, drop_last=True)
+
+    # data load for VOC2007
+    t_loader = data_loader(
+        voc_data_path,
+        sbd_path,
+        is_transform=True,
+        split='train_aug',
+        img_size=('same', 'same')
+    )
+    v_loader = data_loader(
+        voc_data_path,
+        sbd_path,
+        is_transform=True,
+        split='val',
+        img_size=('same', 'same')
+    )
+
+    trainloader = DataLoader(
+        t_loader,
+        batch_size=1,
+        num_workers=16,
+        shuffle=True
+    )
+    valloader = DataLoader(
+        v_loader, batch_size=1, num_workers=16
+    )
+
+    # init model
+    net = UNet(n_channels=3, n_classes=t_loader.n_classes, bilinear=True)
+    logging.info(f'Network:\n'
+                 f'\t{net.n_channels} input channels\n'
+                 f'\t{net.n_classes} output channels (classes)\n'
+                 f'\t{"Bilinear" if net.bilinear else "Transposed conv"} upscaling')
+    if load_pth:
+        net.load_state_dict(
+            torch.load(load_pth, map_location=device)
+        )
+        logging.info(f'Model loaded from {load_pth}')
+    net = net.to(device=device)
+    net = torch.nn.DataParallel(net, device_ids=range(torch.cuda.device_count()))
 
     writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}_SCALE_{img_scale}')
     global_step = 0
+
+    n_train = len(t_loader)
+    n_val = len(v_loader)
 
     logging.info(f'''Starting training:
         Epochs:          {epochs}
@@ -51,32 +100,26 @@ def train_net(net,
         Images scaling:  {img_scale}
     ''')
 
-    optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if net.n_classes > 1 else 'max', patience=2)
-    if net.n_classes > 1:
-        criterion = nn.CrossEntropyLoss()
-    else:
-        criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.SGD(net.parameters(), lr=1.0e-10, weight_decay=0.0005, momentum=0.99)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2)
+
+    loss_fc = get_loss_function('cross_entropy', size_average=False)
 
     for epoch in range(epochs):
         net.train()
 
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
-            for batch in train_loader:
-                imgs = batch['image']
-                true_masks = batch['mask']
-                assert imgs.shape[1] == net.n_channels, \
-                    f'Network has been defined with {net.n_channels} input channels, ' \
-                    f'but loaded images have {imgs.shape[1]} channels. Please check that ' \
-                    'the images are loaded correctly.'
+            for images, labels, f_name in trainloader:
+                imgs = images
+                true_masks = labels
 
                 imgs = imgs.to(device=device, dtype=torch.float32)
-                mask_type = torch.float32 if net.n_classes == 1 else torch.long
+                mask_type = torch.long
                 true_masks = true_masks.to(device=device, dtype=mask_type)
 
                 masks_pred = net(imgs)
-                loss = criterion(masks_pred, true_masks)
+                loss = loss_fc(input=masks_pred, target=true_masks)
                 epoch_loss += loss.item()
                 writer.add_scalar('Loss/train', loss.item(), global_step)
 
@@ -94,7 +137,7 @@ def train_net(net,
                         tag = tag.replace('.', '/')
                         writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
                         writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
-                    val_score = eval_net(net, val_loader, device)
+                    val_score = eval_net(net, valloader, loss_fc, device)
                     scheduler.step(val_score)
                     writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
 
@@ -148,30 +191,11 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
-    # Change here to adapt to your data
-    # n_channels=3 for RGB images
-    # n_classes is the number of probabilities you want to get per pixel
-    #   - For 1 class and background, use n_classes=1
-    #   - For 2 classes, use n_classes=1
-    #   - For N > 2 classes, use n_classes=N
-    net = UNet(n_channels=3, n_classes=1, bilinear=True)
-    logging.info(f'Network:\n'
-                 f'\t{net.n_channels} input channels\n'
-                 f'\t{net.n_classes} output channels (classes)\n'
-                 f'\t{"Bilinear" if net.bilinear else "Transposed conv"} upscaling')
-
-    if args.load:
-        net.load_state_dict(
-            torch.load(args.load, map_location=device)
-        )
-        logging.info(f'Model loaded from {args.load}')
-
-    net.to(device=device)
     # faster convolutions, but more memory
     # cudnn.benchmark = True
 
     try:
-        train_net(net=net,
+        train_net(load_pth=args.load,
                   epochs=args.epochs,
                   batch_size=args.batchsize,
                   lr=args.lr,
@@ -179,7 +203,6 @@ if __name__ == '__main__':
                   img_scale=args.scale,
                   val_percent=args.val / 100)
     except KeyboardInterrupt:
-        torch.save(net.state_dict(), 'INTERRUPTED.pth')
         logging.info('Saved interrupt')
         try:
             sys.exit(0)
