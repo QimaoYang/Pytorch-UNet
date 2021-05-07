@@ -49,24 +49,24 @@ def train_net(load_pth,
         sbd_path,
         is_transform=True,
         split='train_aug',
-        img_size=('same', 'same')
+        img_size=(500, 500)
     )
     v_loader = data_loader(
         voc_data_path,
         sbd_path,
         is_transform=True,
         split='val',
-        img_size=('same', 'same')
+        img_size=(500, 500)
     )
 
     trainloader = DataLoader(
         t_loader,
-        batch_size=1,
+        batch_size=2,
         num_workers=16,
         shuffle=True
     )
     valloader = DataLoader(
-        v_loader, batch_size=1, num_workers=16
+        v_loader, batch_size=2, num_workers=16
     )
 
     # init model
@@ -110,9 +110,9 @@ def train_net(load_pth,
 
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
-            for images, labels, f_name in trainloader:
-                imgs = images
-                true_masks = labels
+            for batch in trainloader:
+                imgs = batch['image']
+                true_masks = batch['mask']
 
                 imgs = imgs.to(device=device, dtype=torch.float32)
                 mask_type = torch.long

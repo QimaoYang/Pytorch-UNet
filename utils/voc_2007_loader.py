@@ -93,14 +93,19 @@ class pascalVOCLoader(data.Dataset):
             im, lbl = self.augmentations(im, lbl)
         if self.is_transform:
             im, lbl = self.transform(im, lbl)
-        return im, lbl, im_name
+        return {
+            'image': im,
+            'mask': lbl,
+            'filename': im_name
+        }
 
     def transform(self, img, lbl):
         if self.img_size == ("same", "same"):
             pass
         else:
             img = img.resize((self.img_size[0], self.img_size[1]))  # uint8 with RGB mode
-            lbl = lbl.resize((self.img_size[0], self.img_size[1]))
+            # lbl = cv2.resize(lbl, (self.img_size[1], self.img_size[0]), cv2.INTER_NEAREST)
+            lbl = lbl.resize((self.img_size[0], self.img_size[1]), Image.NEAREST)
         img = self.tf(img)
         lbl = torch.from_numpy(np.array(lbl)).long()
         lbl[lbl == 255] = 0
@@ -214,8 +219,6 @@ class pascalVOCLoader(data.Dataset):
         if len(pre_encoded) != expected:
             print("Pre-encoding segmentation masks...")
             for ii in tqdm(sbd_train_list):
-                if ii == '2009_005155':
-                    print('============stop here============')
                 lbl_path = pjoin(sbd_path, "dataset/cls", ii + ".mat")
                 data = io.loadmat(lbl_path)
                 lbl = data["GTcls"][0]["Segmentation"][0].astype(np.int32)
