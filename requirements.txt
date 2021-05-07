@@ -4,5 +4,6 @@ Pillow
 torch
 torchvision
 tensorboard
+opencv-python>=4.1.2
 future
 tqdm
