@@ -1,5 +1,5 @@
 """ Full assembly of the parts to form the complete network """
-
+import torch
 import torch.nn.functional as F
 
 from .unet_parts import *
@@ -12,6 +12,7 @@ class UNet(nn.Module):
         self.n_classes = n_classes
         self.bilinear = bilinear
 
+        self.split = torch.split()
         self.inc = DoubleConv(n_channels, 64)
         self.down1 = Down(64, 128)
         self.down2 = Down(128, 256)
@@ -25,7 +26,13 @@ class UNet(nn.Module):
         self.outc = OutConv(64, n_classes)
 
     def forward(self, x):
-        x1 = self.inc(x)
+        x_pre_split = torch.split(x, 250, dim=1)
+        x_block = []
+        for index_x_block in range(len(x_pre_split)):
+            x_block.append(torch.cat(torch.split(x_pre_split[index_x_block], 250, dim=2), dim=0))
+        x_after_split = torch.cat(x_block)
+
+        x1 = self.inc(x_after_split)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x4 = self.down3(x3)
@@ -34,5 +41,12 @@ class UNet(nn.Module):
         x = self.up2(x, x3)
         x = self.up3(x, x2)
         x = self.up4(x, x1)
-        logits = self.outc(x)
+
+        x_pre_split = torch.split(x, 16, dim=0)
+        x_block = [0] * 2
+        for index_x_block in range(len(x_block)):
+            x_block[index_x_block] = (torch.cat((x_pre_split[2*index_x_block], x_pre_split[2*index_x_block+1]), dim=2))
+        x_after_join = torch.cat(x_block, dim=1)
+
+        logits = self.outc(x_after_join)
         return logits

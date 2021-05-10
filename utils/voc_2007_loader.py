@@ -89,6 +89,7 @@ class pascalVOCLoader(data.Dataset):
         lbl_path = pjoin(self.root, "SegmentationClass/pre_encoded", im_name + ".png")
         im = Image.open(im_path)
         lbl = Image.open(lbl_path)
+        # TODO
         if self.augmentations is not None:
             im, lbl = self.augmentations(im, lbl)
         if self.is_transform:
