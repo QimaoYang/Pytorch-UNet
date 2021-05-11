@@ -81,7 +81,7 @@ def train_net(load_pth,
         )
         logging.info(f'Model loaded from {load_pth}')
     net = net.to(device=device)
-    net = torch.nn.DataParallel(net, device_ids=range(torch.cuda.device_count()))
+    net = torch.nn.DataParallel(net, device_ids=[2, 3])
 
     writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}_SCALE_{img_scale}')
     global_step = 0
@@ -181,7 +181,7 @@ def get_args():
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     args = get_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda', 2)
     logging.info(f'Using device {device}')
 
     # faster convolutions, but more memory
